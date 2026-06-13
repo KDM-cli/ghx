@@ -459,7 +459,17 @@ func (m PRModel) generateTitle() tea.Msg {
 }
 
 func (m PRModel) createPR() tea.Msg {
-	pr, err := m.ghClient.CreatePR(m.title.Value(), m.desc.Value(), extractBranchName(m.baseBranch), m.headBranch, m.draft, m.targetRepoNWO)
+	headBranchArg := m.headBranch
+	if originNWO, ok := m.remoteURLs["origin"]; ok {
+		if m.targetRepoNWO != "" && m.targetRepoNWO != originNWO {
+			parts := strings.Split(originNWO, "/")
+			if len(parts) > 0 && parts[0] != "" {
+				headBranchArg = parts[0] + ":" + m.headBranch
+			}
+		}
+	}
+
+	pr, err := m.ghClient.CreatePR(m.title.Value(), m.desc.Value(), extractBranchName(m.baseBranch), headBranchArg, m.draft, m.targetRepoNWO)
 	if err != nil {
 		return prResultMsg{err: err}
 	}

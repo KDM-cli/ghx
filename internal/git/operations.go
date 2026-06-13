@@ -117,7 +117,7 @@ func GetRemoteBranches() ([]string, error) {
 	scanner := bufio.NewScanner(bytes.NewReader(output))
 	for scanner.Scan() {
 		branch := strings.TrimSpace(scanner.Text())
-		if branch != "" {
+		if branch != "" && strings.Contains(branch, "/") && !strings.Contains(branch, "HEAD") {
 			branches = append(branches, branch)
 		}
 	}
