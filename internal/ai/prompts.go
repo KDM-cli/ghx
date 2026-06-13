@@ -37,15 +37,17 @@ Changes:
 }
 
 func GeneratePRDescriptionPrompt(commits, diffSummary string) string {
-	return fmt.Sprintf(`You are a pull request description generator. Based on the following commits and changes, generate a comprehensive PR description.
+	return fmt.Sprintf(`You are a pull request description generator. Based on the following commits and changes, generate a concise, high-quality PR description.
 
 Include:
 - Summary (2-3 sentences)
 - Key changes (bullet points)
 - Testing notes
-- Breaking changes (if any breaking changes (if any)
+- Breaking changes (if any)
 
-Format the response in markdown.
+Formatting Rules:
+- Format the response in raw markdown.
+- Do NOT wrap the entire response in markdown code blocks or triple backticks. Output the raw headers and text directly.
 
 Commits:
 %s
