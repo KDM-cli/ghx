@@ -423,15 +423,26 @@ func (m PRModel) generateDescription() tea.Msg {
 	resp, err := m.aiManager.ChatWithOptions(context.Background(), []ai.Message{
 		{Role: "user", Content: ai.GeneratePRDescriptionPrompt(strings.Join(commitStrs, "\n"), diffSummary)},
 	}, map[string]interface{}{
-		"max_tokens":  400,
-		"num_predict": 400,
+		"max_tokens":  800,
+		"num_predict": 800,
 		"temperature": 0.3,
 	})
 	if err != nil {
 		return descGeneratedMsg{err: err}
 	}
 
-	return descGeneratedMsg{content: resp.Content}
+	content := strings.TrimSpace(resp.Content)
+	if strings.HasPrefix(content, "```markdown") {
+		content = strings.TrimPrefix(content, "```markdown")
+		content = strings.TrimSuffix(content, "```")
+		content = strings.TrimSpace(content)
+	} else if strings.HasPrefix(content, "```") {
+		content = strings.TrimPrefix(content, "```")
+		content = strings.TrimSuffix(content, "```")
+		content = strings.TrimSpace(content)
+	}
+
+	return descGeneratedMsg{content: content}
 }
 
 func (m PRModel) generateTitle() tea.Msg {
@@ -455,7 +466,14 @@ func (m PRModel) generateTitle() tea.Msg {
 		return titleGeneratedMsg{err: err}
 	}
 
-	return titleGeneratedMsg{content: strings.Trim(strings.TrimSpace(resp.Content), "\"`'")}
+	content := strings.Trim(strings.TrimSpace(resp.Content), "\"`'")
+	if strings.HasPrefix(content, "```") {
+		content = strings.TrimPrefix(content, "```")
+		content = strings.TrimSuffix(content, "```")
+		content = strings.TrimSpace(content)
+	}
+
+	return titleGeneratedMsg{content: content}
 }
 
 func (m PRModel) createPR() tea.Msg {
