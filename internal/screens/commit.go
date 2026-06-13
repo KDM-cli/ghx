@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/KDM-cli/ghx/internal/ai"
@@ -25,23 +27,30 @@ const (
 )
 
 type CommitModel struct {
-	theme       *styles.Theme
-	db          *db.DB
-	aiManager   *ai.Manager
-	state       commitState
-	fileList    components.FileListModel
-	message     components.TextInputModel
-	suggestions []string
+	theme           *styles.Theme
+	db              *db.DB
+	aiManager       *ai.Manager
+	state           commitState
+	fileList        components.FileListModel
+	message         components.TextInputModel
+	suggestions     []string
 	selectedSuggestion int
-	loading     bool
-	committing  bool
-	width       int
-	height      int
-	err         error
-	result      string
+	loading         bool
+	committing      bool
+	width           int
+	height          int
+	err             error
+	result          string
+	spinner         spinner.Model
+	generationStart time.Time
+	elapsedTime     time.Duration
 }
 
 func NewCommitModel(theme *styles.Theme, database *db.DB, aiManager *ai.Manager) CommitModel {
+	s := spinner.New()
+	s.Spinner = spinner.Dot
+	s.Style = theme.Accent
+
 	return CommitModel{
 		theme:     theme,
 		db:        database,
@@ -49,11 +58,12 @@ func NewCommitModel(theme *styles.Theme, database *db.DB, aiManager *ai.Manager)
 		state:     commitSelectFiles,
 		message:   components.NewTextInputModel(theme, "Commit message..."),
 		fileList:  components.NewFileListModel(theme, nil),
+		spinner:   s,
 	}
 }
 
 func (m CommitModel) Init() tea.Cmd {
-	return m.loadFiles
+	return tea.Batch(m.loadFiles, m.spinner.Tick)
 }
 
 func (m CommitModel) loadFiles() tea.Msg {
@@ -88,8 +98,17 @@ type commitResultMsg struct {
 
 func (m CommitModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
+	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
+	case spinner.TickMsg:
+		var spinCmd tea.Cmd
+		m.spinner, spinCmd = m.spinner.Update(msg)
+		if m.loading {
+			m.elapsedTime = time.Since(m.generationStart)
+		}
+		return m, spinCmd
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -168,6 +187,8 @@ func (m CommitModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "g":
 			if m.state == commitEnterMessage && m.fileList.SelectedCount() > 0 {
 				m.loading = true
+				m.generationStart = time.Now()
+				m.elapsedTime = 0
 				return m, m.generateAISuggestions
 			}
 
@@ -194,6 +215,8 @@ func (m CommitModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "r":
 			if m.state == commitAISuggestions || m.state == commitEnterMessage {
 				m.loading = true
+				m.generationStart = time.Now()
+				m.elapsedTime = 0
 				return m, m.generateAISuggestions
 			}
 		}
@@ -203,11 +226,13 @@ func (m CommitModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m.state {
 	case commitSelectFiles:
 		m.fileList, cmd = m.fileList.Update(msg)
+		cmds = append(cmds, cmd)
 	case commitEnterMessage:
 		m.message, cmd = m.message.Update(msg)
+		cmds = append(cmds, cmd)
 	}
 
-	return m, cmd
+	return m, tea.Batch(cmds...)
 }
 
 func cleanSuggestion(s string) string {
@@ -267,6 +292,25 @@ func (m CommitModel) doCommit() tea.Msg {
 func (m CommitModel) View() string {
 	var b strings.Builder
 
+	if m.loading {
+		b.WriteString(m.theme.Title.Render("Commit AI Suggestion"))
+		b.WriteString("\n\n")
+
+		loadingContent := fmt.Sprintf(
+			"  %s  %s\n\n  %s\n\n  %s",
+			m.spinner.View(),
+			m.theme.Text.Bold(true).Render("Generating commit message suggestions..."),
+			m.theme.Muted.Render("Analyzing selected changes and communicating with AI provider..."),
+			m.theme.Accent.Render(fmt.Sprintf("Elapsed time: %.1fs", m.elapsedTime.Seconds())),
+		)
+
+		b.WriteString(m.theme.Box.Render(loadingContent))
+		b.WriteString("\n\n")
+		b.WriteString(m.theme.Help.Render("Please wait..."))
+
+		return lipgloss.NewStyle().Width(m.width).Height(m.height).Render(b.String())
+	}
+
 	b.WriteString(m.theme.Title.Render("Commit"))
 	b.WriteString("\n\n")
 
@@ -304,9 +348,7 @@ func (m CommitModel) View() string {
 		b.WriteString(m.message.View())
 		b.WriteString("\n\n")
 
-		if m.loading {
-			b.WriteString(m.theme.Accent.Render("Generating AI suggestions..."))
-		} else if m.committing {
+		if m.committing {
 			b.WriteString(m.theme.Muted.Render("Committing..."))
 		} else {
 			b.WriteString(m.theme.Help.Render("g AI Generate   Tab Files   Enter Commit"))
@@ -314,10 +356,6 @@ func (m CommitModel) View() string {
 
 	case commitAISuggestions:
 		b.WriteString(m.theme.Header.Render("AI Suggestions"))
-		if m.loading {
-			b.WriteString(" ")
-			b.WriteString(m.theme.Acccent.Render("(generating...)"))
-		}
 		b.WriteString("\n\n")
 
 		for i, s := range m.suggestions {

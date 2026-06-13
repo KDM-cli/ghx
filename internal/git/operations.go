@@ -132,15 +132,11 @@ type CommitInfo struct {
 	Date    string
 }
 
-func CheckoutBranch(name string) (CommandResult, error) {
-	out, err := runGit("checkout", "-b", name)
-	return CommandResult{Output: out}, err
-}
-
-func SuggestedCommitMessage(files []FileStatus, paths []string) string {
-	selected := map[string]bool{}
-	for _, path := range paths {
-		selected[path] = true
+func GetLog(limit int) ([]CommitInfo, error) {
+	cmd := exec.Command("git", "log", "-n", fmt.Sprintf("%d", limit), "--oneline")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, err
 	}
 
 	var commits []CommitInfo

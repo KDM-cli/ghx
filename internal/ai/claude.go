@@ -116,22 +116,21 @@ func (c *ClaudeProvider) Stream(ctx context.Context, messages []Message) (<-chan
 		for stream.Next() {
 			event := stream.Current()
 
-			switch event.Type {
-			case anthropic.MessageStreamEventTypeContentBlockDelta:
-				if event.Delta != nil && event.Delta.Type == anthropic.ContentBlockDeltaTypeTextDelta {
+			switch eventVariant := event.AsUnion().(type) {
+			case anthropic.ContentBlockDeltaEvent:
+				if eventVariant.Delta.Type == anthropic.ContentBlockDeltaEventDeltaTypeTextDelta {
 					ch <- StreamResponse{
-						Content: event.Delta.Text,
+						Content: eventVariant.Delta.Text,
 						Done:    false,
 					}
 				}
-			case anthropic.MessageStreamEventTypeMessageStop:
-				ch <- StreamResponse{Done: true}
-				return
 			}
 		}
 
 		if err := stream.Err(); err != nil {
 			ch <- StreamResponse{Error: err}
+		} else {
+			ch <- StreamResponse{Done: true}
 		}
 	}()
 
