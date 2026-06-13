@@ -248,3 +248,41 @@ func GetRemotes() ([]string, error) {
 
 	return remotes, nil
 }
+
+func GetRemoteURL(remote string) (string, error) {
+	cmd := exec.Command("git", "remote", "get-url", remote)
+	output, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+func ParseNWOFromURL(urlStr string) string {
+	urlStr = strings.TrimSuffix(urlStr, ".git")
+	if strings.HasPrefix(urlStr, "git@") {
+		parts := strings.SplitN(urlStr, ":", 2)
+		if len(parts) == 2 {
+			return parts[1]
+		}
+	} else {
+		parts := strings.Split(urlStr, "/")
+		if len(parts) >= 2 {
+			return parts[len(parts)-2] + "/" + parts[len(parts)-1]
+		}
+	}
+	return ""
+}
+
+func AddRemote(name, urlStr string) error {
+	urlStr = ExpandRemoteURL(urlStr)
+	cmd := exec.Command("git", "remote", "add", name, urlStr)
+	return cmd.Run()
+}
+
+func ExpandRemoteURL(urlStr string) string {
+	if !strings.Contains(urlStr, "://") && !strings.Contains(urlStr, "@") && strings.Contains(urlStr, "/") {
+		return fmt.Sprintf("https://github.com/%s.git", urlStr)
+	}
+	return urlStr
+}

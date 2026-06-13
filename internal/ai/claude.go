@@ -53,6 +53,10 @@ func (c *ClaudeProvider) Models() []string {
 }
 
 func (c *ClaudeProvider) Chat(ctx context.Context, messages []Message) (Response, error) {
+	return c.ChatWithOptions(ctx, messages, nil)
+}
+
+func (c *ClaudeProvider) ChatWithOptions(ctx context.Context, messages []Message, options map[string]interface{}) (Response, error) {
 	if !c.IsConfigured() {
 		return Response{}, fmt.Errorf("claude not configured")
 	}
@@ -66,11 +70,36 @@ func (c *ClaudeProvider) Chat(ctx context.Context, messages []Message) (Response
 		}
 	}
 
-	resp, err := c.client.Messages.New(ctx, anthropic.MessageNewParams{
+	maxTokens := int64(4096)
+	if options != nil {
+		if val, ok := options["max_tokens"]; ok {
+			if limit, ok := val.(int); ok {
+				maxTokens = int64(limit)
+			} else if limitF, ok := val.(float64); ok {
+				maxTokens = int64(limitF)
+			}
+		}
+	}
+
+	params := anthropic.MessageNewParams{
 		Model:     anthropic.F(c.model),
-		MaxTokens: anthropic.F(int64(4096)),
+		MaxTokens: anthropic.F(maxTokens),
 		Messages:  anthropic.F(chatMessages),
-	})
+	}
+
+	if options != nil {
+		if val, ok := options["temperature"]; ok {
+			if temp, ok := val.(float64); ok {
+				params.Temperature = anthropic.F(temp)
+			} else if tempF, ok := val.(float32); ok {
+				params.Temperature = anthropic.F(float64(tempF))
+			} else if tempI, ok := val.(int); ok {
+				params.Temperature = anthropic.F(float64(tempI))
+			}
+		}
+	}
+
+	resp, err := c.client.Messages.New(ctx, params)
 	if err != nil {
 		return Response{}, err
 	}

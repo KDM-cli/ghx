@@ -158,6 +158,10 @@ func (m *Manager) Chat(ctx context.Context, messages []Message) (Response, error
 	return m.GetActiveProvider().Chat(ctx, messages)
 }
 
+func (m *Manager) ChatWithOptions(ctx context.Context, messages []Message, options map[string]interface{}) (Response, error) {
+	return m.GetActiveProvider().ChatWithOptions(ctx, messages, options)
+}
+
 func (m *Manager) Stream(ctx context.Context, messages []Message) (<-chan StreamResponse, error) {
 	return m.GetActiveProvider().Stream(ctx, messages)
 }

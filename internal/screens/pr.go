@@ -23,6 +23,7 @@ const (
 	prEnterDescription
 	prSelectBase
 	prReview
+	prConfigUpstream
 	prCreating
 	prDone
 )
@@ -34,6 +35,7 @@ type PRModel struct {
 	state           prState
 	title           components.TextInputModel
 	desc            components.TextAreaModel
+	upstreamInput   components.TextInputModel
 	baseBranch      string
 	headBranch      string
 	branches        []string
@@ -48,6 +50,10 @@ type PRModel struct {
 	spinner         spinner.Model
 	generationStart time.Time
 	elapsedTime     time.Duration
+	targetRemote    string
+	targetRepoNWO   string
+	remotes         []string
+	remoteURLs      map[string]string
 }
 
 func NewPRModel(theme *styles.Theme, aiManager *ai.Manager) PRModel {
@@ -56,19 +62,21 @@ func NewPRModel(theme *styles.Theme, aiManager *ai.Manager) PRModel {
 	s.Style = theme.Accent
 
 	return PRModel{
-		theme:      theme,
-		aiManager:  aiManager,
-		ghClient:   gh.NewClient(),
-		state:      prEnterTitle,
-		title:      components.NewTextInputModel(theme, "PR title..."),
-		desc:       components.NewTextAreaModel(theme, "PR description..."),
-		baseBranch: "main",
-		spinner:    s,
+		theme:         theme,
+		aiManager:     aiManager,
+		ghClient:      gh.NewClient(),
+		state:         prEnterTitle,
+		title:         components.NewTextInputModel(theme, "PR title..."),
+		desc:          components.NewTextAreaModel(theme, "PR description..."),
+		upstreamInput: components.NewTextInputModel(theme, "owner/repo or github-url..."),
+		baseBranch:    "main",
+		spinner:       s,
+		remoteURLs:    make(map[string]string),
 	}
 }
 
 func (m PRModel) Init() tea.Cmd {
-	return tea.Batch(m.loadBranches, m.loadCurrentBranch, m.spinner.Tick)
+	return tea.Batch(m.loadBranches, m.loadCurrentBranch, m.loadRemotes, m.spinner.Tick)
 }
 
 func (m PRModel) loadBranches() tea.Msg {
@@ -85,6 +93,48 @@ func (m PRModel) loadCurrentBranch() tea.Msg {
 		return currentBranchMsg{err: err}
 	}
 	return currentBranchMsg{branch: branch}
+}
+
+func (m PRModel) loadRemotes() tea.Msg {
+	remotes, err := git.GetRemotes()
+	if err != nil {
+		return remotesLoadedMsg{err: err}
+	}
+
+	urls := make(map[string]string)
+	for _, r := range remotes {
+		rawURL, err := git.GetRemoteURL(r)
+		if err == nil {
+			nwo := git.ParseNWOFromURL(rawURL)
+			if nwo != "" {
+				urls[r] = nwo
+			}
+		}
+	}
+
+	return remotesLoadedMsg{remotes: remotes, remoteURLs: urls}
+}
+
+type remotesLoadedMsg struct {
+	remotes    []string
+	remoteURLs map[string]string
+	err        error
+}
+
+type upstreamConfiguredMsg struct {
+	remotesMsg remotesLoadedMsg
+	err        error
+}
+
+func (m PRModel) addUpstreamRemote(urlStr string) tea.Cmd {
+	return func() tea.Msg {
+		err := git.AddRemote("upstream", urlStr)
+		if err != nil {
+			return upstreamConfiguredMsg{err: err}
+		}
+		remotesMsg := m.loadRemotes()
+		return upstreamConfiguredMsg{remotesMsg: remotesMsg.(remotesLoadedMsg)}
+	}
 }
 
 type branchesLoadedMsg struct {
@@ -130,6 +180,7 @@ func (m PRModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.title.SetWidth(m.width - 10)
 		m.desc.SetWidth(m.width - 10)
 		m.desc.SetHeight(8)
+		m.upstreamInput.SetWidth(m.width - 10)
 
 	case branchesLoadedMsg:
 		if msg.err == nil {
@@ -147,6 +198,46 @@ func (m PRModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case currentBranchMsg:
 		if msg.err == nil {
 			m.headBranch = msg.branch
+		}
+
+	case remotesLoadedMsg:
+		if msg.err == nil {
+			m.remotes = msg.remotes
+			m.remoteURLs = msg.remoteURLs
+
+			// Default targetRemote to "upstream" if it exists, otherwise "origin"
+			hasUpstream := false
+			for _, r := range m.remotes {
+				if r == "upstream" {
+					hasUpstream = true
+					break
+				}
+			}
+			if hasUpstream {
+				m.targetRemote = "upstream"
+			} else if len(m.remotes) > 0 {
+				m.targetRemote = m.remotes[0]
+			} else {
+				m.targetRemote = "origin"
+			}
+
+			if nwo, ok := m.remoteURLs[m.targetRemote]; ok {
+				m.targetRepoNWO = nwo
+			}
+		}
+
+	case upstreamConfiguredMsg:
+		m.loading = false
+		if msg.err != nil {
+			m.err = msg.err
+		} else {
+			m.remotes = msg.remotesMsg.remotes
+			m.remoteURLs = msg.remotesMsg.remoteURLs
+			m.targetRemote = "upstream"
+			if nwo, ok := m.remoteURLs[m.targetRemote]; ok {
+				m.targetRepoNWO = nwo
+			}
+			m.state = prReview
 		}
 
 	case descGeneratedMsg:
@@ -172,7 +263,7 @@ func (m PRModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = msg.err
 
 	case tea.KeyMsg:
-		if m.generating {
+		if m.generating || m.loading {
 			return m, nil
 		}
 		m.err = nil
@@ -213,6 +304,11 @@ func (m PRModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case prReview:
 				m.state = prCreating
 				return m, m.createPR
+			case prConfigUpstream:
+				if m.upstreamInput.Value() != "" {
+					m.loading = true
+					return m, m.addUpstreamRemote(m.upstreamInput.Value())
+				}
 			case prDone:
 				// Reset
 				m.state = prEnterTitle
@@ -225,6 +321,28 @@ func (m PRModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.state == prSelectBase || m.state == prReview || m.state == prDone {
 				return m, func() tea.Msg {
 					return Navigate(ScreenHome)
+				}
+			}
+
+		case "esc":
+			if m.state == prConfigUpstream {
+				m.state = prReview
+				return m, nil
+			}
+
+		case "u":
+			if m.state == prReview {
+				hasUpstream := false
+				for _, r := range m.remotes {
+					if r == "upstream" {
+						hasUpstream = true
+						break
+					}
+				}
+				if !hasUpstream {
+					m.state = prConfigUpstream
+					m.upstreamInput.SetValue("")
+					return m, nil
 				}
 			}
 
@@ -258,6 +376,24 @@ func (m PRModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.state == prReview {
 				m.draft = !m.draft
 			}
+
+		case "t":
+			if m.state == prReview && len(m.remotes) > 1 {
+				idx := -1
+				for i, r := range m.remotes {
+					if r == m.targetRemote {
+						idx = i
+						break
+					}
+				}
+				if idx != -1 {
+					nextIdx := (idx + 1) % len(m.remotes)
+					m.targetRemote = m.remotes[nextIdx]
+					if nwo, ok := m.remoteURLs[m.targetRemote]; ok {
+						m.targetRepoNWO = nwo
+					}
+				}
+			}
 		}
 	}
 
@@ -267,6 +403,8 @@ func (m PRModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.title, cmd = m.title.Update(msg)
 	case prEnterDescription:
 		m.desc, cmd = m.desc.Update(msg)
+	case prConfigUpstream:
+		m.upstreamInput, cmd = m.upstreamInput.Update(msg)
 	}
 
 	return m, cmd
@@ -282,8 +420,12 @@ func (m PRModel) generateDescription() tea.Msg {
 
 	diffSummary, _ := git.GetDiffStat(base, "HEAD")
 
-	resp, err := m.aiManager.Chat(context.Background(), []ai.Message{
+	resp, err := m.aiManager.ChatWithOptions(context.Background(), []ai.Message{
 		{Role: "user", Content: ai.GeneratePRDescriptionPrompt(strings.Join(commitStrs, "\n"), diffSummary)},
+	}, map[string]interface{}{
+		"max_tokens":  400,
+		"num_predict": 400,
+		"temperature": 0.3,
 	})
 	if err != nil {
 		return descGeneratedMsg{err: err}
@@ -302,8 +444,12 @@ func (m PRModel) generateTitle() tea.Msg {
 
 	diffSummary, _ := git.GetDiffStat(base, "HEAD")
 
-	resp, err := m.aiManager.Chat(context.Background(), []ai.Message{
+	resp, err := m.aiManager.ChatWithOptions(context.Background(), []ai.Message{
 		{Role: "user", Content: ai.GeneratePRTitlePrompt(strings.Join(commitStrs, "\n"), diffSummary)},
+	}, map[string]interface{}{
+		"max_tokens":  80,
+		"num_predict": 80,
+		"temperature": 0.2,
 	})
 	if err != nil {
 		return titleGeneratedMsg{err: err}
@@ -313,7 +459,7 @@ func (m PRModel) generateTitle() tea.Msg {
 }
 
 func (m PRModel) createPR() tea.Msg {
-	pr, err := m.ghClient.CreatePR(m.title.Value(), m.desc.Value(), extractBranchName(m.baseBranch), m.headBranch, m.draft)
+	pr, err := m.ghClient.CreatePR(m.title.Value(), m.desc.Value(), extractBranchName(m.baseBranch), m.headBranch, m.draft, m.targetRepoNWO)
 	if err != nil {
 		return prResultMsg{err: err}
 	}
@@ -425,6 +571,14 @@ func (m PRModel) View() string {
 		b.WriteString(m.theme.Accent.Render(m.headBranch + " → " + extractBranchName(m.baseBranch)))
 		b.WriteString("\n\n")
 
+		b.WriteString(m.theme.Bold.Render("Target Repo: "))
+		if m.targetRepoNWO != "" {
+			b.WriteString(m.theme.Accent.Render(fmt.Sprintf("%s (%s)", m.targetRemote, m.targetRepoNWO)))
+		} else {
+			b.WriteString(m.theme.Accent.Render(m.targetRemote))
+		}
+		b.WriteString("\n\n")
+
 		if m.draft {
 			b.WriteString(m.theme.Warning.Render("[Draft PR]"))
 		} else {
@@ -432,7 +586,37 @@ func (m PRModel) View() string {
 		}
 		b.WriteString("\n\n")
 
-		b.WriteString(m.theme.Help.Render("d Toggle Draft   Enter Create   Tab Edit   b Back"))
+		hasUpstream := false
+		for _, r := range m.remotes {
+			if r == "upstream" {
+				hasUpstream = true
+				break
+			}
+		}
+
+		if hasUpstream {
+			if len(m.remotes) > 1 {
+				b.WriteString(m.theme.Help.Render("d Toggle Draft   t Toggle Target   Enter Create   Tab Edit   b Back"))
+			} else {
+				b.WriteString(m.theme.Help.Render("d Toggle Draft   Enter Create   Tab Edit   b Back"))
+			}
+		} else {
+			b.WriteString(m.theme.Help.Render("d Toggle Draft   u Set Upstream   Enter Create   Tab Edit   b Back"))
+		}
+
+	case prConfigUpstream:
+		b.WriteString(m.theme.Header.Render("Configure Upstream Repository"))
+		b.WriteString("\n\n")
+
+		if m.loading {
+			b.WriteString(m.theme.Muted.Render("Adding remote repository..."))
+		} else {
+			b.WriteString(m.theme.Text.Render("Enter upstream repository (e.g. owner/repo or github-url):"))
+			b.WriteString("\n")
+			b.WriteString(m.upstreamInput.View())
+			b.WriteString("\n\n")
+			b.WriteString(m.theme.Help.Render("Enter Confirm   Esc Cancel"))
+		}
 
 	case prCreating:
 		b.WriteString(m.theme.Accent.Render("Creating pull request..."))
