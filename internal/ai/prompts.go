@@ -6,19 +6,16 @@ import (
 )
 
 func GenerateCommitMessagePrompt(diff string) string {
-	return fmt.Sprintf(`You are a git commit message generator. Analyze the following diff and generate a concise, conventional commit message.
+	return fmt.Sprintf(`You are a git commit message generator. Analyze the following diff and generate exactly 3 concise, conventional commit message options.
 
 Format: <type>(<scope>): <description>
 
 Types: feat, fix, docs, style, refactor, test, chore
 
-Generate 3 commit message options. Each on a new line with a number.
-
 Rules:
-- Keep the first line under 72 characters
-- Use imperative mood ("add" not "added")
-- No period at the end
-- If there are breaking changes, start with "BREAKING CHANGE:"
+1. POV: Write the message from the first-person perspective of the user committing the changes. Use imperative mood (e.g., "add features", "fix bug", "refactor styles"). Do NOT write third-person explanations or descriptions (e.g., do NOT say "This commit adds...", "A commit that...", or "This refactoring...").
+2. Content ONLY: Return ONLY the raw commit message options. Do NOT include any introduction, explanations, conversational filler, markdown formatting (like backticks or code blocks), or JSON wrapper.
+3. Formatting: Return exactly 3 options, each on a new line, prefixed with its number (e.g., "1. feat(scope): description"). Keep the first line of each option under 72 characters and do not end with a period.
 
 Diff:
 %s`, diff)

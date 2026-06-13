@@ -2,6 +2,7 @@ package screens
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -266,12 +267,60 @@ func (m CommitModel) generateAISuggestions() tea.Msg {
 		return aiSuggestionsMsg{err: err}
 	}
 
-	lines := strings.Split(strings.TrimSpace(resp.Content), "\n")
+	content := strings.TrimSpace(resp.Content)
+
+	// Clean Markdown code block wrapper if present
+	if strings.HasPrefix(content, "```json") {
+		content = strings.TrimPrefix(content, "```json")
+		content = strings.TrimSuffix(content, "```")
+		content = strings.TrimSpace(content)
+	} else if strings.HasPrefix(content, "```") {
+		content = strings.TrimPrefix(content, "```")
+		content = strings.TrimSuffix(content, "```")
+		content = strings.TrimSpace(content)
+	}
+
+	// Try parsing as JSON array of strings
+	var jsonSuggestions []string
+	if err := json.Unmarshal([]byte(content), &jsonSuggestions); err == nil && len(jsonSuggestions) > 0 {
+		var suggestions []string
+		for i, s := range jsonSuggestions {
+			suggestions = append(suggestions, fmt.Sprintf("%d. %s", i+1, strings.TrimSpace(s)))
+		}
+		return aiSuggestionsMsg{suggestions: suggestions}
+	}
+
+	// Fallback to parsing line-by-line
+	lines := strings.Split(content, "\n")
 	var suggestions []string
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if line != "" {
+		if line == "" {
+			continue
+		}
+
+		// Clean quote marks or brackets that some models wrap lines in
+		line = strings.Trim(line, "`\"'{}[]")
+		line = strings.TrimSpace(line)
+
+		// Match lines starting with a number like "1. ", "2. ", "3. " or prefix numbers
+		if len(line) > 2 && (line[0] >= '1' && line[0] <= '9') && (line[1] == '.' || line[1] == ')') {
 			suggestions = append(suggestions, line)
+		} else if strings.Contains(line, "feat(") || strings.Contains(line, "fix(") || strings.Contains(line, "refactor(") || strings.Contains(line, "style(") || strings.Contains(line, "docs(") || strings.Contains(line, "test(") || strings.Contains(line, "chore(") {
+			suggestions = append(suggestions, fmt.Sprintf("%d. %s", len(suggestions)+1, line))
+		}
+	}
+
+	// If no structured suggestions were extracted, fallback to raw lines
+	if len(suggestions) == 0 {
+		for i, line := range lines {
+			if len(suggestions) >= 3 {
+				break
+			}
+			line = strings.TrimSpace(line)
+			if line != "" {
+				suggestions = append(suggestions, fmt.Sprintf("%d. %s", i+1, line))
+			}
 		}
 	}
 
