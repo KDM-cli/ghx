@@ -3,7 +3,9 @@
   <p><strong>AI-Powered GitHub Workflow TUI Assistant</strong></p>
 
   <p>
-    <a href="https://github.com/KDM-cli/ghx/blob/main/LICENSE"><img src="https://img.shields.io/github/license/KDM-cli/ghx?style=for-the-badge&logo=mit" alt="license"/></a>
+    <a href="https://github.com/KDM-cli/ghx/blob/main/LICENSE">
+  <img src="https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge" alt="MIT License"/>
+</a>
     <a href="https://go.dev"><img src="https://img.shields.io/badge/Made%20with-Go-00ADD8?style=for-the-badge&logo=go" alt="go"/></a>
   </p>
   
