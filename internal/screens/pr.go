@@ -3,6 +3,7 @@ package screens
 import (
 	"context"
 	"fmt"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -19,41 +20,50 @@ import (
 type prState int
 
 const (
-	prEnterTitle prState = iota
+	prDashboard prState = iota
+	prEnterTitle
 	prEnterDescription
 	prSelectBase
 	prReview
 	prConfigUpstream
 	prCreating
 	prDone
+	prEditTitle
+	prEditDescription
+	prEditing
 )
 
 type PRModel struct {
-	theme           *styles.Theme
-	aiManager       *ai.Manager
-	ghClient        *gh.Client
-	state           prState
-	title           components.TextInputModel
-	desc            components.TextAreaModel
-	upstreamInput   components.TextInputModel
-	baseBranch      string
-	headBranch      string
-	branches        []string
-	draft           bool
-	selectedBase    int
-	loading         bool
-	generating      bool
-	prURL           string
-	width           int
-	height          int
-	err             error
-	spinner         spinner.Model
-	generationStart time.Time
-	elapsedTime     time.Duration
-	targetRemote    string
-	targetRepoNWO   string
-	remotes         []string
-	remoteURLs      map[string]string
+	theme            *styles.Theme
+	aiManager        *ai.Manager
+	ghClient         *gh.Client
+	state            prState
+	title            components.TextInputModel
+	desc             components.TextAreaModel
+	upstreamInput    components.TextInputModel
+	baseBranch       string
+	headBranch       string
+	branches         []string
+	draft            bool
+	selectedBase     int
+	loading          bool
+	generating       bool
+	prURL            string
+	width            int
+	height           int
+	err              error
+	spinner          spinner.Model
+	generationStart  time.Time
+	elapsedTime      time.Duration
+	targetRemote     string
+	targetRepoNWO    string
+	remotes          []string
+	remoteURLs       map[string]string
+	prs              []gh.PRInfo
+	selectedPRIdx    int
+	selectedPRDetail *gh.PRDetails
+	loadingDetails   bool
+	loadingPRs       bool
 }
 
 func NewPRModel(theme *styles.Theme, aiManager *ai.Manager) PRModel {
@@ -65,18 +75,25 @@ func NewPRModel(theme *styles.Theme, aiManager *ai.Manager) PRModel {
 		theme:         theme,
 		aiManager:     aiManager,
 		ghClient:      gh.NewClient(),
-		state:         prEnterTitle,
+		state:         prDashboard,
 		title:         components.NewTextInputModel(theme, "PR title..."),
 		desc:          components.NewTextAreaModel(theme, "PR description..."),
 		upstreamInput: components.NewTextInputModel(theme, "owner/repo or github-url..."),
 		baseBranch:    "main",
 		spinner:       s,
 		remoteURLs:    make(map[string]string),
+		loadingPRs:    true,
 	}
 }
 
 func (m PRModel) Init() tea.Cmd {
-	return tea.Batch(m.loadBranches, m.loadCurrentBranch, m.loadRemotes, m.spinner.Tick)
+	return tea.Batch(
+		m.loadBranches,
+		m.loadCurrentBranch,
+		m.loadRemotes,
+		m.loadPRs,
+		m.spinner.Tick,
+	)
 }
 
 func (m PRModel) loadBranches() tea.Msg {
@@ -152,6 +169,44 @@ type prResultMsg struct {
 	err   error
 }
 
+type prsLoadedMsg struct {
+	prs []gh.PRInfo
+	err error
+}
+
+func (m PRModel) loadPRs() tea.Msg {
+	client := gh.NewClient()
+	prs, err := client.ListPRs(30)
+	return prsLoadedMsg{prs: prs, err: err}
+}
+
+type prDetailsLoadedMsg struct {
+	details *gh.PRDetails
+	number  int
+	err     error
+}
+
+func (m PRModel) loadPRDetails(number int) tea.Cmd {
+	return func() tea.Msg {
+		client := gh.NewClient()
+		details, err := client.GetPRDetails(number)
+		return prDetailsLoadedMsg{details: details, number: number, err: err}
+	}
+}
+
+type prEditResultMsg struct {
+	err error
+}
+
+func (m PRModel) doEditPR() tea.Msg {
+	if m.selectedPRIdx >= 0 && m.selectedPRIdx < len(m.prs) {
+		pr := m.prs[m.selectedPRIdx]
+		err := m.ghClient.EditPR(pr.Number, m.title.Value(), m.desc.Value())
+		return prEditResultMsg{err: err}
+	}
+	return prEditResultMsg{err: fmt.Errorf("no pull request selected")}
+}
+
 type descGeneratedMsg struct {
 	content string
 	err     error
@@ -181,6 +236,34 @@ func (m PRModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.desc.SetWidth(m.width - 10)
 		m.updateDescHeight()
 		m.upstreamInput.SetWidth(m.width - 10)
+
+	case prsLoadedMsg:
+		m.loadingPRs = false
+		m.prs = msg.prs
+		m.err = msg.err
+		if msg.err == nil && len(m.prs) > 0 {
+			m.selectedPRIdx = 0
+			m.loadingDetails = true
+			return m, m.loadPRDetails(m.prs[0].Number)
+		}
+
+	case prDetailsLoadedMsg:
+		if msg.err == nil && len(m.prs) > 0 && m.selectedPRIdx < len(m.prs) && m.prs[m.selectedPRIdx].Number == msg.number {
+			m.selectedPRDetail = msg.details
+			m.loadingDetails = false
+		}
+
+	case prEditResultMsg:
+		m.loading = false
+		if msg.err != nil {
+			m.err = msg.err
+			m.state = prEditDescription
+		} else {
+			m.state = prDashboard
+			m.loadingPRs = true
+			m.selectedPRDetail = nil
+			return m, m.loadPRs
+		}
 
 	case branchesLoadedMsg:
 		if msg.err == nil {
@@ -268,6 +351,79 @@ func (m PRModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.err = nil
+
+		if m.state == prDashboard {
+			switch msg.String() {
+			case "up", "k":
+				if m.selectedPRIdx > 0 {
+					m.selectedPRIdx--
+					m.loadingDetails = true
+					m.selectedPRDetail = nil
+					return m, m.loadPRDetails(m.prs[m.selectedPRIdx].Number)
+				}
+			case "down", "j":
+				if m.selectedPRIdx < len(m.prs)-1 {
+					m.selectedPRIdx++
+					m.loadingDetails = true
+					m.selectedPRDetail = nil
+					return m, m.loadPRDetails(m.prs[m.selectedPRIdx].Number)
+				}
+			case "c":
+				m.state = prEnterTitle
+				m.title.SetValue("")
+				m.desc.SetValue("")
+				m.err = nil
+			case "e":
+				if len(m.prs) > 0 && m.selectedPRDetail != nil {
+					m.state = prEditTitle
+					m.title.SetValue(m.selectedPRDetail.Title)
+					m.desc.SetValue(m.selectedPRDetail.Body)
+					m.updateDescHeight()
+					m.err = nil
+				}
+			case "o":
+				if len(m.prs) > 0 && m.selectedPRIdx < len(m.prs) {
+					_ = exec.Command("gh", "pr", "view", fmt.Sprintf("%d", m.prs[m.selectedPRIdx].Number), "--web").Start()
+				}
+			case "r":
+				m.loadingPRs = true
+				m.selectedPRDetail = nil
+				return m, m.loadPRs
+			case "b", "esc":
+				return m, func() tea.Msg {
+					return Navigate(ScreenHome)
+				}
+			}
+			return m, nil
+		}
+
+		if m.state == prEditTitle {
+			switch msg.String() {
+			case "tab", "enter":
+				m.state = prEditDescription
+			case "esc", "b":
+				m.state = prDashboard
+			}
+			var editCmd tea.Cmd
+			m.title, editCmd = m.title.Update(msg)
+			return m, editCmd
+		}
+
+		if m.state == prEditDescription {
+			switch msg.String() {
+			case "tab":
+				m.state = prEditTitle
+			case "enter":
+				m.loading = true
+				return m, m.doEditPR
+			case "esc", "b":
+				m.state = prEditTitle
+			}
+			var editCmd tea.Cmd
+			m.desc, editCmd = m.desc.Update(msg)
+			m.updateDescHeight()
+			return m, editCmd
+		}
 
 		switch msg.String() {
 		case "tab":
@@ -421,6 +577,11 @@ func (m PRModel) generateDescription() tea.Msg {
 	}
 
 	diffSummary, _ := git.GetDiffStat(base, "HEAD")
+	diffSummary = strings.TrimSpace(diffSummary)
+
+	if len(commitStrs) == 0 && diffSummary == "" {
+		return descGeneratedMsg{content: "No changes detected between base and head branches. Please commit changes on a feature branch first."}
+	}
 
 	resp, err := m.aiManager.ChatWithOptions(context.Background(), []ai.Message{
 		{Role: "user", Content: ai.GeneratePRDescriptionPrompt(strings.Join(commitStrs, "\n"), diffSummary)},
@@ -456,6 +617,11 @@ func (m PRModel) generateTitle() tea.Msg {
 	}
 
 	diffSummary, _ := git.GetDiffStat(base, "HEAD")
+	diffSummary = strings.TrimSpace(diffSummary)
+
+	if len(commitStrs) == 0 && diffSummary == "" {
+		return titleGeneratedMsg{content: "No changes detected"}
+	}
 
 	resp, err := m.aiManager.ChatWithOptions(context.Background(), []ai.Message{
 		{Role: "user", Content: ai.GeneratePRTitlePrompt(strings.Join(commitStrs, "\n"), diffSummary)},
@@ -507,8 +673,10 @@ func extractBranchName(remoteBranch string) string {
 func (m PRModel) View() string {
 	var b strings.Builder
 
-	b.WriteString(m.theme.Title.Render("Create Pull Request"))
-	b.WriteString("\n\n")
+	if m.state != prDashboard && m.state != prEditTitle && m.state != prEditDescription && m.state != prEditing {
+		b.WriteString(m.theme.Title.Render("Create Pull Request"))
+		b.WriteString("\n\n")
+	}
 
 	if m.err != nil {
 		b.WriteString(m.theme.Error.Render("Error: " + m.err.Error()))
@@ -516,6 +684,159 @@ func (m PRModel) View() string {
 	}
 
 	switch m.state {
+	case prDashboard:
+		b.WriteString(m.theme.Title.Render("Pull Requests Dashboard"))
+		b.WriteString("\n\n")
+
+		if m.loadingPRs {
+			b.WriteString(m.theme.Muted.Render("Loading pull requests..."))
+			return lipgloss.NewStyle().Width(m.width).Height(m.height).Render(b.String())
+		}
+
+		if len(m.prs) == 0 {
+			b.WriteString(m.theme.Muted.Render("No open pull requests found."))
+			b.WriteString("\n\n")
+			b.WriteString(m.theme.Help.Render("c Create PR   r Refresh   b Back"))
+			return lipgloss.NewStyle().Width(m.width).Height(m.height).Render(b.String())
+		}
+
+		// List viewport scrolling
+		reservedLines := 6
+		visibleCount := m.height - reservedLines
+		if visibleCount < 3 {
+			visibleCount = 3
+		}
+
+		start := 0
+		if m.selectedPRIdx >= visibleCount {
+			start = m.selectedPRIdx - visibleCount + 1
+		}
+		end := start + visibleCount
+		if end > len(m.prs) {
+			end = len(m.prs)
+		}
+		if end-start < visibleCount && start > 0 {
+			start = end - visibleCount
+			if start < 0 {
+				start = 0
+			}
+		}
+
+		leftWidth := 34
+		var leftList strings.Builder
+		leftList.WriteString(m.theme.Header.Render("Open Pull Requests"))
+		leftList.WriteString("\n\n")
+
+		for i := start; i < end; i++ {
+			pr := m.prs[i]
+			if i == m.selectedPRIdx {
+				leftList.WriteString(m.theme.Selected.Render("> "))
+			} else {
+				leftList.WriteString("  ")
+			}
+
+			// Format title and number
+			displayName := fmt.Sprintf("#%d %s", pr.Number, pr.Title)
+			maxLen := leftWidth - 4
+			if len(displayName) > maxLen {
+				displayName = displayName[:maxLen-3] + "..."
+			}
+
+			if i == m.selectedPRIdx {
+				leftList.WriteString(m.theme.Text.Bold(true).Render(displayName))
+			} else {
+				leftList.WriteString(m.theme.Text.Render(displayName))
+			}
+			leftList.WriteString("\n")
+		}
+
+		for leftList.Len() < visibleCount {
+			leftList.WriteString("\n")
+		}
+
+		// Right card details
+		var rightCard strings.Builder
+		rightWidth := m.width - leftWidth - 4
+		if rightWidth < 30 {
+			rightWidth = 30
+		}
+
+		if m.loadingDetails || m.selectedPRDetail == nil {
+			rightCard.WriteString(m.theme.Muted.Render("Loading pull request details..."))
+		} else {
+			details := m.selectedPRDetail
+			rightCard.WriteString(m.theme.Primary.Render(fmt.Sprintf("%s (#%d)", details.Title, details.Number)))
+			rightCard.WriteString("\n\n")
+
+			stateStyle := m.theme.Success
+			if details.State == "CLOSED" {
+				stateStyle = m.theme.Error
+			} else if details.State == "MERGED" {
+				stateStyle = m.theme.Accent
+			}
+			rightCard.WriteString(m.theme.Bold.Render("Status: "))
+			rightCard.WriteString(stateStyle.Render(details.State))
+			rightCard.WriteString("\n")
+
+			rightCard.WriteString(m.theme.Bold.Render("Mergeable: "))
+			if details.Mergeable == "MERGEABLE" {
+				rightCard.WriteString(m.theme.Success.Render("Yes"))
+			} else if details.Mergeable == "CONFLICTING" {
+				rightCard.WriteString(m.theme.Error.Render("Conflicting"))
+			} else {
+				rightCard.WriteString(m.theme.Warning.Render(details.Mergeable))
+			}
+			rightCard.WriteString("\n\n")
+
+			rightCard.WriteString(m.theme.Bold.Render("URL:\n"))
+			rightCard.WriteString(m.theme.Accent.Render(details.URL))
+			rightCard.WriteString("\n\n")
+
+			rightCard.WriteString(m.theme.Bold.Render("Description:\n"))
+			if details.Body != "" {
+				wrappedDesc := lipgloss.NewStyle().Width(rightWidth - 6).Render(details.Body)
+				// Limit text lines to fit viewport height
+				lines := strings.Split(wrappedDesc, "\n")
+				maxLines := visibleCount - 8
+				if maxLines < 3 {
+					maxLines = 3
+				}
+				if len(lines) > maxLines {
+					wrappedDesc = strings.Join(lines[:maxLines], "\n") + "\n" + m.theme.Muted.Render("... (truncated)")
+				}
+				rightCard.WriteString(wrappedDesc)
+			} else {
+				rightCard.WriteString(m.theme.Muted.Render("No description provided."))
+			}
+		}
+
+		rightBox := m.theme.Box.Width(rightWidth).Height(visibleCount + 2).Render(rightCard.String())
+
+		mainContent := lipgloss.JoinHorizontal(lipgloss.Top,
+			lipgloss.NewStyle().Width(leftWidth).Render(leftList.String()),
+			rightBox,
+		)
+		b.WriteString(mainContent)
+		b.WriteString("\n\n")
+		b.WriteString(m.theme.Help.Render("↑/↓ Navigate   c Create   e Edit   o Open in browser   r Refresh   b Back"))
+
+	case prEditTitle:
+		b.WriteString(m.theme.Header.Render("Edit Pull Request - Title"))
+		b.WriteString("\n\n")
+		b.WriteString(m.title.View())
+		b.WriteString("\n\n")
+		b.WriteString(m.theme.Help.Render("Enter/Tab Next   Esc Cancel"))
+
+	case prEditDescription:
+		b.WriteString(m.theme.Header.Render("Edit Pull Request - Description"))
+		b.WriteString("\n\n")
+		b.WriteString(m.desc.View())
+		b.WriteString("\n\n")
+		b.WriteString(m.theme.Help.Render("Tab Title   Enter Save   Esc Cancel"))
+
+	case prEditing:
+		b.WriteString(m.theme.Accent.Render("Saving pull request updates..."))
+
 	case prEnterTitle:
 		b.WriteString(m.theme.Header.Render("Step 1: Enter Title (1/3)"))
 		b.WriteString("\n\n")
