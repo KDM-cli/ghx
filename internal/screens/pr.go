@@ -401,8 +401,16 @@ func (m PRModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "tab", "enter":
 				m.state = prEditDescription
-			case "esc", "b":
+			case "esc":
 				m.state = prDashboard
+			case "ctrl+g":
+				m.generating = true
+				m.generationStart = time.Now()
+				m.elapsedTime = 0
+				return m, m.generateTitle
+			case "ctrl+s":
+				m.loading = true
+				return m, m.doEditPR
 			}
 			var editCmd tea.Cmd
 			m.title, editCmd = m.title.Update(msg)
@@ -413,11 +421,16 @@ func (m PRModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "tab":
 				m.state = prEditTitle
-			case "enter":
+			case "esc":
+				m.state = prEditTitle
+			case "ctrl+g":
+				m.generating = true
+				m.generationStart = time.Now()
+				m.elapsedTime = 0
+				return m, m.generateDescription
+			case "ctrl+s":
 				m.loading = true
 				return m, m.doEditPR
-			case "esc", "b":
-				m.state = prEditTitle
 			}
 			var editCmd tea.Cmd
 			m.desc, editCmd = m.desc.Update(msg)
@@ -454,8 +467,6 @@ func (m PRModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.title.Value() != "" {
 					m.state = prEnterDescription
 				}
-			case prEnterDescription:
-				m.state = prSelectBase
 			case prSelectBase:
 				m.state = prReview
 			case prReview:
@@ -486,6 +497,10 @@ func (m PRModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.state = prReview
 				return m, nil
 			}
+			if m.state == prEnterTitle || m.state == prEnterDescription || m.state == prSelectBase || m.state == prReview {
+				m.state = prDashboard
+				return m, nil
+			}
 
 		case "u":
 			if m.state == prReview {
@@ -503,14 +518,14 @@ func (m PRModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 
-		case "g":
-			if m.state == prEnterTitle && !m.generating && m.title.Value() == "" {
+		case "ctrl+g":
+			if m.state == prEnterTitle && !m.generating {
 				m.generating = true
 				m.generationStart = time.Now()
 				m.elapsedTime = 0
 				return m, m.generateTitle
 			}
-			if m.state == prEnterDescription && !m.generating && m.desc.Value() == "" {
+			if m.state == prEnterDescription && !m.generating {
 				m.generating = true
 				m.generationStart = time.Now()
 				m.elapsedTime = 0
@@ -570,13 +585,18 @@ func (m PRModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m PRModel) generateDescription() tea.Msg {
 	base := m.baseBranch
-	commits, _ := git.GetCommitsBetween(base, "HEAD", 15)
+	head := "HEAD"
+	if (m.state == prEditDescription || m.state == prEditing) && m.selectedPRDetail != nil {
+		base = m.selectedPRDetail.BaseRefName
+		head = m.selectedPRDetail.HeadRefName
+	}
+	commits, _ := git.GetCommitsBetween(base, head, 15)
 	var commitStrs []string
 	for _, c := range commits {
 		commitStrs = append(commitStrs, c.Message)
 	}
 
-	diffSummary, _ := git.GetDiffStat(base, "HEAD")
+	diffSummary, _ := git.GetDiffStat(base, head)
 	diffSummary = strings.TrimSpace(diffSummary)
 
 	if len(commitStrs) == 0 && diffSummary == "" {
@@ -610,13 +630,18 @@ func (m PRModel) generateDescription() tea.Msg {
 
 func (m PRModel) generateTitle() tea.Msg {
 	base := m.baseBranch
-	commits, _ := git.GetCommitsBetween(base, "HEAD", 15)
+	head := "HEAD"
+	if (m.state == prEditTitle || m.state == prEditing) && m.selectedPRDetail != nil {
+		base = m.selectedPRDetail.BaseRefName
+		head = m.selectedPRDetail.HeadRefName
+	}
+	commits, _ := git.GetCommitsBetween(base, head, 15)
 	var commitStrs []string
 	for _, c := range commits {
 		commitStrs = append(commitStrs, c.Message)
 	}
 
-	diffSummary, _ := git.GetDiffStat(base, "HEAD")
+	diffSummary, _ := git.GetDiffStat(base, head)
 	diffSummary = strings.TrimSpace(diffSummary)
 
 	if len(commitStrs) == 0 && diffSummary == "" {
@@ -823,16 +848,42 @@ func (m PRModel) View() string {
 	case prEditTitle:
 		b.WriteString(m.theme.Header.Render("Edit Pull Request - Title"))
 		b.WriteString("\n\n")
-		b.WriteString(m.title.View())
-		b.WriteString("\n\n")
-		b.WriteString(m.theme.Help.Render("Enter/Tab Next   Esc Cancel"))
+		if m.generating {
+			loadingContent := fmt.Sprintf(
+				"  %s  %s\n\n  %s\n\n  %s",
+				m.spinner.View(),
+				m.theme.Text.Bold(true).Render("Regenerating PR title using AI..."),
+				m.theme.Muted.Render("Analyzing commits and diff summary relative to base branch..."),
+				m.theme.Accent.Render(fmt.Sprintf("Elapsed time: %.1fs", m.elapsedTime.Seconds())),
+			)
+			b.WriteString(m.theme.Box.Render(loadingContent))
+			b.WriteString("\n\n")
+			b.WriteString(m.theme.Help.Render("Please wait..."))
+		} else {
+			b.WriteString(m.title.View())
+			b.WriteString("\n\n")
+			b.WriteString(m.theme.Help.Render("ctrl+g AI Regenerate   ctrl+s Save   Enter/Tab Description   Esc Cancel"))
+		}
 
 	case prEditDescription:
 		b.WriteString(m.theme.Header.Render("Edit Pull Request - Description"))
 		b.WriteString("\n\n")
-		b.WriteString(m.desc.View())
-		b.WriteString("\n\n")
-		b.WriteString(m.theme.Help.Render("Tab Title   Enter Save   Esc Cancel"))
+		if m.generating {
+			loadingContent := fmt.Sprintf(
+				"  %s  %s\n\n  %s\n\n  %s",
+				m.spinner.View(),
+				m.theme.Text.Bold(true).Render("Regenerating PR description using AI..."),
+				m.theme.Muted.Render("Analyzing commits and diff summary relative to base branch..."),
+				m.theme.Accent.Render(fmt.Sprintf("Elapsed time: %.1fs", m.elapsedTime.Seconds())),
+			)
+			b.WriteString(m.theme.Box.Render(loadingContent))
+			b.WriteString("\n\n")
+			b.WriteString(m.theme.Help.Render("Please wait..."))
+		} else {
+			b.WriteString(m.desc.View())
+			b.WriteString("\n\n")
+			b.WriteString(m.theme.Help.Render("ctrl+g AI Regenerate   ctrl+s Save   Tab Title   Esc Cancel"))
+		}
 
 	case prEditing:
 		b.WriteString(m.theme.Accent.Render("Saving pull request updates..."))
@@ -864,11 +915,7 @@ func (m PRModel) View() string {
 			b.WriteString("\n")
 			b.WriteString(m.title.View())
 			b.WriteString("\n\n")
-			if m.title.Value() == "" {
-				b.WriteString(m.theme.Help.Render("g AI Generate   Tab/Enter Next   b Back"))
-			} else {
-				b.WriteString(m.theme.Help.Render("Tab/Enter Next   b Back"))
-			}
+			b.WriteString(m.theme.Help.Render("ctrl+g AI Generate   Tab/Enter Next   Esc Cancel"))
 		}
 
 	case prEnterDescription:
@@ -891,11 +938,7 @@ func (m PRModel) View() string {
 			b.WriteString("\n")
 			b.WriteString(m.desc.View())
 			b.WriteString("\n\n")
-			if m.desc.Value() == "" {
-				b.WriteString(m.theme.Help.Render("g AI Generate   Tab Next   Shift+Tab Prev   b Back"))
-			} else {
-				b.WriteString(m.theme.Help.Render("Tab Next   Shift+Tab Prev   b Back"))
-			}
+			b.WriteString(m.theme.Help.Render("ctrl+g AI Generate   Tab Next   Shift+Tab Prev   Esc Cancel"))
 		}
 
 	case prSelectBase:
@@ -938,7 +981,7 @@ func (m PRModel) View() string {
 		}
 
 		b.WriteString("\n")
-		b.WriteString(m.theme.Help.Render("↑/↓ Navigate   Tab Next   Shift+Tab Prev   b Back"))
+		b.WriteString(m.theme.Help.Render("↑/↓ Navigate   Tab Next   Shift+Tab Prev   Esc Cancel"))
 
 	case prReview:
 		b.WriteString(m.theme.Header.Render("Review & Create"))
@@ -977,12 +1020,12 @@ func (m PRModel) View() string {
 
 		if hasUpstream {
 			if len(m.remotes) > 1 {
-				b.WriteString(m.theme.Help.Render("d Toggle Draft   t Toggle Target   Enter Create   Tab Edit   b Back"))
+				b.WriteString(m.theme.Help.Render("d Toggle Draft   t Toggle Target   Enter Create   Tab Edit   Esc Cancel"))
 			} else {
-				b.WriteString(m.theme.Help.Render("d Toggle Draft   Enter Create   Tab Edit   b Back"))
+				b.WriteString(m.theme.Help.Render("d Toggle Draft   Enter Create   Tab Edit   Esc Cancel"))
 			}
 		} else {
-			b.WriteString(m.theme.Help.Render("d Toggle Draft   u Set Upstream   Enter Create   Tab Edit   b Back"))
+			b.WriteString(m.theme.Help.Render("d Toggle Draft   u Set Upstream   Enter Create   Tab Edit   Esc Cancel"))
 		}
 
 	case prConfigUpstream:

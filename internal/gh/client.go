@@ -148,16 +148,18 @@ func (c *Client) OpenRepoInBrowser(repo string) error {
 }
 
 type PRDetails struct {
-	Number    int    `json:"number"`
-	Title     string `json:"title"`
-	Body      string `json:"body"`
-	State     string `json:"state"`
-	URL       string `json:"url"`
-	Mergeable string `json:"mergeable"`
+	Number      int    `json:"number"`
+	Title       string `json:"title"`
+	Body        string `json:"body"`
+	State       string `json:"state"`
+	URL         string `json:"url"`
+	Mergeable   string `json:"mergeable"`
+	BaseRefName string `json:"baseRefName"`
+	HeadRefName string `json:"headRefName"`
 }
 
 func (c *Client) GetPRDetails(number int) (*PRDetails, error) {
-	args := []string{"pr", "view", fmt.Sprintf("%d", number), "--json", "number,title,body,state,url,mergeable"}
+	args := []string{"pr", "view", fmt.Sprintf("%d", number), "--json", "number,title,body,state,url,mergeable,baseRefName,headRefName"}
 	output, err := c.run(args...)
 	if err != nil {
 		return nil, err
