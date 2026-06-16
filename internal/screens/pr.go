@@ -347,13 +347,13 @@ func (m PRModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "g":
-			if m.state == prEnterTitle && !m.generating {
+			if m.state == prEnterTitle && !m.generating && m.title.Value() == "" {
 				m.generating = true
 				m.generationStart = time.Now()
 				m.elapsedTime = 0
 				return m, m.generateTitle
 			}
-			if m.state == prEnterDescription && !m.generating {
+			if m.state == prEnterDescription && !m.generating && m.desc.Value() == "" {
 				m.generating = true
 				m.generationStart = time.Now()
 				m.elapsedTime = 0
@@ -541,7 +541,11 @@ func (m PRModel) View() string {
 			b.WriteString("\n")
 			b.WriteString(m.title.View())
 			b.WriteString("\n\n")
-			b.WriteString(m.theme.Help.Render("g AI Generate   Tab/Enter Next   b Back"))
+			if m.title.Value() == "" {
+				b.WriteString(m.theme.Help.Render("g AI Generate   Tab/Enter Next   b Back"))
+			} else {
+				b.WriteString(m.theme.Help.Render("Tab/Enter Next   b Back"))
+			}
 		}
 
 	case prEnterDescription:
@@ -564,7 +568,11 @@ func (m PRModel) View() string {
 			b.WriteString("\n")
 			b.WriteString(m.desc.View())
 			b.WriteString("\n\n")
-			b.WriteString(m.theme.Help.Render("g AI Generate   Tab Next   Shift+Tab Prev   b Back"))
+			if m.desc.Value() == "" {
+				b.WriteString(m.theme.Help.Render("g AI Generate   Tab Next   Shift+Tab Prev   b Back"))
+			} else {
+				b.WriteString(m.theme.Help.Render("Tab Next   Shift+Tab Prev   b Back"))
+			}
 		}
 
 	case prSelectBase:

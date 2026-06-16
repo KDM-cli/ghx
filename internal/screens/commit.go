@@ -190,7 +190,7 @@ func (m CommitModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "g":
-			if m.state == commitEnterMessage && m.fileList.SelectedCount() > 0 {
+			if m.state == commitEnterMessage && m.fileList.SelectedCount() > 0 && m.message.Value() == "" {
 				m.loading = true
 				m.generationStart = time.Now()
 				m.elapsedTime = 0
@@ -410,7 +410,11 @@ func (m CommitModel) View() string {
 		if m.committing {
 			b.WriteString(m.theme.Muted.Render("Committing..."))
 		} else {
-			b.WriteString(m.theme.Help.Render("g AI Generate   Tab Files   Enter Commit"))
+			if m.message.Value() == "" {
+				b.WriteString(m.theme.Help.Render("g AI Generate   Tab Files   Enter Commit"))
+			} else {
+				b.WriteString(m.theme.Help.Render("Tab Files   Enter Commit"))
+			}
 		}
 
 	case commitAISuggestions:
