@@ -65,6 +65,27 @@ if ! curl -sSfL "$DOWNLOAD_URL" -o "$TMP_DIR/$TARBALL"; then
     exit 1
 fi
 
+CHECKSUMS_URL="https://github.com/$OWNER/$REPO/releases/download/$LATEST_TAG/checksums.txt"
+echo "Downloading checksums..."
+curl -sSfL "$CHECKSUMS_URL" -o "$TMP_DIR/checksums.txt"
+
+EXPECTED_SUM=$(awk -v file="$TARBALL" '$2 == file {print $1}' "$TMP_DIR/checksums.txt")
+if [ -z "$EXPECTED_SUM" ]; then
+    echo "Error: No checksum found for $TARBALL"
+    exit 1
+fi
+
+if command -v sha256sum >/dev/null 2>&1; then
+    ACTUAL_SUM=$(sha256sum "$TMP_DIR/$TARBALL" | awk '{print $1}')
+else
+    ACTUAL_SUM=$(shasum -a 256 "$TMP_DIR/$TARBALL" | awk '{print $1}')
+fi
+
+if [ "$EXPECTED_SUM" != "$ACTUAL_SUM" ]; then
+    echo "Error: Checksum verification failed for $TARBALL"
+    exit 1
+fi
+
 echo "Extracting..."
 tar -xzf "$TMP_DIR/$TARBALL" -C "$TMP_DIR"
 
@@ -74,7 +95,7 @@ if [ ! -w "$INSTALL_DIR" ]; then
     # Fallback to local user bin if /usr/local/bin is not writable without sudo
     INSTALL_DIR="$HOME/.local/bin"
     mkdir -p "$INSTALL_DIR"
-    echo "Warning: $INSTALL_DIR is not writable. Installing to $INSTALL_DIR instead."
+    echo "Warning: /usr/local/bin is not writable. Installing to $INSTALL_DIR instead."
     echo "Make sure $INSTALL_DIR is in your PATH."
 fi
 

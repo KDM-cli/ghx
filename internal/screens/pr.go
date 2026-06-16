@@ -775,7 +775,9 @@ func (m PRModel) View() string {
 			leftList.WriteString("\n")
 		}
 
-		for leftList.Len() < visibleCount {
+		// Fill vertical space to match right panel height
+		renderedLines := end - start
+		for i := renderedLines; i < visibleCount; i++ {
 			leftList.WriteString("\n")
 		}
 
@@ -1088,12 +1090,12 @@ func (m *PRModel) updateDescHeight() {
 		height = 4
 	}
 	
-	maxHeight := 10
-	if m.height > 18 {
-		maxHeight = m.height - 12
-		if maxHeight > 16 {
-			maxHeight = 16
-		}
+	maxHeight := m.height - 12
+	if maxHeight < 4 {
+		maxHeight = 4
+	}
+	if maxHeight > 16 {
+		maxHeight = 16
 	}
 	if height > maxHeight {
 		height = maxHeight

@@ -194,8 +194,9 @@ func (m ReposModel) View() string {
 			leftList.WriteString("\n")
 		}
 
-		// Fill vertical space
-		for leftList.Len() < visibleCount {
+		// Fill vertical space to match right panel height
+		renderedLines := end - start
+		for i := renderedLines; i < visibleCount; i++ {
 			leftList.WriteString("\n")
 		}
 
